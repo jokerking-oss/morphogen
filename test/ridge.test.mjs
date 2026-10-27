@@ -71,6 +71,31 @@ test('buildRidge returns null when there is no bake (no map.js)', async () => {
   assert.equal(buildRidge({ G: 28, std: [], act: [] }), null, 'empty arrays must not pass');
 });
 
+// The check above passed for the wrong reason for a while: it omitted F0/F1/k0/k1, so
+// the finite-bounds guard caught the case even with the length guard removed. That made
+// it a false green -- mutation testing here returns [] with bounds supplied, which is
+// the only input that isolates the length check. Pinned separately so it cannot regress
+// quietly again.
+test('buildRidge rejects a short bake even when its bounds are valid', async () => {
+  const { buildRidge } = await importRidge();
+  const validBounds = { F0: 0.004, F1: 0.09, k0: 0.036, k1: 0.072 };
+  const short = { G: 28, std: [], act: [], ...validBounds };
+  assert.equal(buildRidge(short), null,
+    'empty std/act with valid bounds must still be rejected (length guard)');
+
+  // One tile short of G*G: also not a usable bake.
+  const almost = { G: 28, ...validBounds,
+    std: new Array(783).fill(200), act: new Array(783).fill(200) };
+  assert.equal(buildRidge(almost), null, 'a bake one tile short is not a bake');
+
+  // And exactly G*G does pass, so the guard is a length check and not a blanket no.
+  const exact = { G: 28, ...validBounds,
+    std: new Array(784).fill(200), act: new Array(784).fill(200) };
+  const r = buildRidge(exact);
+  assert.ok(r, 'a complete bake is accepted');
+  assert.equal(r.life.length, 784);
+});
+
 test('lifeAt returns 0 outside the box instead of clamping to the edge', async () => {
   const { buildRidge, lifeAt } = await importRidge();
   const { MORPHOGEN_MAP: MAP } = loadMap();
