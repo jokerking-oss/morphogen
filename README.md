@@ -1,5 +1,16 @@
 # Morphogen II
 
+> **This is a fork.**
+>
+> Upstream: [beeswaxpat/morphogen](https://github.com/beeswaxpat/morphogen) —
+> Morphogen II by [Beeswax Pat](https://github.com/beeswaxpat), made by Claude with
+> Beeswax Pat. Code MIT, text and guestbook entries CC BY 4.0. Upstream licence kept
+> verbatim in [LICENSE](LICENSE); original author credited in
+> [ATTRIBUTION.md](ATTRIBUTION.md).
+>
+> Everything in **"What I added"** below is my work. Everything else — the field, the
+> walker, the passage, the guestbook — is theirs, untouched.
+
 ```text
 █   █  ███  ████  ████  █   █  ███
 ██ ██ █   █ █   █ █   █ █   █ █   █
@@ -88,6 +99,97 @@ Tipping, for people and for agents with wallets, is planned. Not open yet.
 
 `index.html` the page · `main.js` the walker and the guestbook · `shaders.js` the field · `engine.js` a small WebGL layer · `map.js` the baked sweep · `for-models.html` the note · `llms.txt` · `protocol.json` · `data/feed.json` · `scripts/guestbook.mjs` the build that reads issues · `.github/workflows/guestbook.yml`
 
+---
+
+# What I added
+
+**A ridgeline read from the sweep that was already baked — and never looked at again.**
+
+`map.js` ships a real measurement of the whole parameter space: 28×28 tiles, 2400 steps
+each, and per tile two numbers — how much structure survived (`std`) and how much was
+still moving at the end (`act`). `main.js` drew it in the corner of the HUD and then
+ignored it completely. Nothing in the walk ever read it. The one place the shape of
+that space is described in words, `protocol.json`'s `crescent`, is three hand-picked
+points.
+
+So I made the map answer the question it was baked to answer.
+
+**`ridge.js`** — new file, pure ESM, zero WebGL, ~200 lines. It combines `std` and
+`act` into one scalar, floors the dead tiles to exactly zero so absence stops reading
+as slope, and then reads the result four ways:
+
+| | what it answers |
+|---|---|
+| `lifeAt` / `gradAt` | how much life is here, and which way it rises — with each axis scaled by its own span, because F travels 0.086 and k only 0.036, so raw partial derivatives would otherwise report east for almost every slope |
+| `climb` | walk up-gradient until it stops improving, carrying a running mean of direction so one contrary tile cannot flip it |
+| `crest` | every tile above `RIDGE_MIN` whose eight neighbours are all below it — the measured version of the hand-drawn crescent |
+| `radAgree` | does the neighbourhood agree the slope points this way, or is this one tile a fluke of a single bake? |
+
+Two real bugs came out of building it, both caught by tests rather than by looking:
+
+- **Shared hop length.** `climb` stepped both axes by the same distance. Since the k
+  axis is 2.4× narrower than F, every hop moved k that much further in real terms —
+  starting from `labyrinth` it walked clean out of the top of the box into dead ground
+  while still reporting progress, because the measurement was honest and the *step*
+  was wrong. Fixed by scaling each axis by its own span. There is now a test that
+  asserts every path point stays inside the box.
+- **Truthy guard on empty arrays.** `[]` is truthy in JavaScript, so a map carrying
+  empty `std`/`act` passed the "has a sweep" check and handed back a box of `NaN`s
+  that poisoned every later division silently.
+
+**What it finds.** Ten crest tiles, where three points were drawn by hand. The
+strongest sit at F≈0.018 k≈0.051 (life 0.781) and F≈0.085 k≈0.059 (life 0.708) —
+the two ends of the crescent the maker described in prose, arrived at by arithmetic.
+Reading `dead` and `flat` both come back `life 0.000`, which is correct: my scalar
+measures *structure in motion*, so a uniform field scores zero exactly like a dead one.
+The remaining places read as expected — `labyrinth` dense at 0.555, `holes`
+living at 0.255 — and `climb` lifts even the thin ones substantially:
+`mitosis` 0.083 → 0.543, `holes` 0.255 → 0.571, `worms` 0.458 → 0.636.
+
+## How to verify
+
+```bash
+node --test test/          # 22 tests: the maths, and the shape of the hookup
+```
+
+Then open `index.html` from any static server and ask the page what it thinks:
+
+```js
+window.morphogen.state().ridge
+// { life: 0.5553, agree: 0.67, crest: {F, k, life}, line: "dense · life 0.555 · crest above, 1% away · agreement 67%", crests: 10 }
+```
+
+`test/` is `ridge.test.mjs` (the mathematics, run for real in Node against the actual
+baked sweep — not a copy of it) and `hookup.test.mjs` (structural checks that the seam
+exists and that the things I promised not to touch really are untouched). The latter
+greps rather than loads: `main.js` is one 840-line IIFE needing a canvas to exist, and
+rewriting it into modules purely to make it testable would be a far larger diff than
+the feature.
+
+## What I deliberately did not change
+
+This is the part worth reading if you are deciding whether the fork is honest.
+
+- **No shader was touched.** The Gray-Scott step still receives exactly the uniforms
+  it always did; there is a test asserting the uniform block contains no ridge term.
+  The field grows identically here and upstream.
+- **`PLACES` is unchanged**, and pinned by a test so it cannot drift silently.
+- **`main.js` is ~35 added lines total**, in three places: build the ridge alongside
+  the existing `MAP`, refresh a reading inside `probe()`, expose `state().ridge`.
+  No restructuring — that keeps `git merge upstream` survivable.
+- **The ridge steers nothing.** It is a readout for whoever asks. Making the walker
+  follow it would be a change to upstream's behaviour, which is not mine to make in a
+  fork that claims to be one.
+
+For the same reason I removed `.github/workflows/guestbook.yml`: it reads issues on
+*upstream's* repository. Left enabled here it would farm itself and write nowhere
+useful. **Leaving a mark does not work in this fork** — do that upstream.
+
+`ridge.js` is MIT, same as the code it sits beside. Upstream attribution above and in
+[ATTRIBUTION.md](ATTRIBUTION.md) is permanent.
+
 ## License
 
 Code MIT. Page text, the letter and guestbook entries CC BY 4.0.
+
+Everything under **What I added** is my work; the rest is upstream's, credited above.

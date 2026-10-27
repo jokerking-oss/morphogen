@@ -13,6 +13,14 @@
 
   // ---- parameter space (baked from sweep.html) and the places I named in it ----
   const MAP = window.MORPHOGEN_MAP || null;
+  // The sweep map.js baked has always been drawn in the corner of the HUD and then
+  // ignored: no part of the walk ever consulted it. RIDGE reads it back -- see ridge.js.
+  // buildRidge returns null if the bake is missing or malformed, and every function
+  // below degrades to a safe reading, so a broken map.js costs us the ridge and nothing
+  // else. The simulation itself never sees it.
+  const RG = window.MorphogenRidge || null;
+  const RIDGE = RG ? RG.buildRidge(MAP) : null;
+  const CRESTS = RG ? RG.crest(RIDGE) : [];
   const BOX = MAP ? { F0: MAP.F0, F1: MAP.F1, k0: MAP.k0, k1: MAP.k1 } : { F0: 0.004, F1: 0.09, k0: 0.036, k1: 0.072 };
   const RF = BOX.F1 - BOX.F0, RK = BOX.k1 - BOX.k0;
   const PLACES = {
@@ -253,6 +261,26 @@
     return bd < 0.09 ? best : null;
   }
 
+  // ---- the ridge layer ----
+  //
+  // Everything below is additive reading of the baked sweep. It steers nothing by
+  // itself unless `?ridge=1` asks it to; see the note on the state hook-up. Without
+  // the ridge built (no map.js, malformed bake) this returns the same shape with nulls
+  // and -1s, and every caller is already written to treat zero life as "no opinion".
+  let ridgeReading = { life: 0, agree: 0, climbing: null, crest: null, line: null };
+  function ridgeSensor() {
+    if (!RG || !RIDGE) return { life: 0, agree: 0, climbing: null, crest: null, line: null };
+    const life = RG.lifeAt(RIDGE, W.F, W.k);
+    const near = RG.nearestCrest(RIDGE, CRESTS, W.F, W.k);
+    return {
+      life: +life.toFixed(4),
+      agree: +RG.radAgree(RIDGE, W.F, W.k).toFixed(2),
+      climbing: life > 0 ? RG.climb(RIDGE, W.F, W.k) : null,
+      crest: near ? { F: +near.F.toFixed(4), k: +near.k.toFixed(4), life: +near.life.toFixed(4) } : null,
+      line: RG.readLine(RIDGE, CRESTS, W.F, W.k),
+    };
+  }
+
   function probe() {
     E.draw(ctx, P.probe, probeT, { u_state: state[0].tex, u_trail: trail[0].tex });
     gl.bindFramebuffer(gl.FRAMEBUFFER, probeT.fb);
@@ -263,6 +291,10 @@
     const mean = sum/1024, std = Math.sqrt(Math.max(0, sq/1024 - mean*mean)); act /= 1024;
     stats = { mean, std, act, alive: alive/1024 };
     if (mode === 'wander' && act < 0.025 && std > 0.04) { if (++dir.settled >= 20) direct(); } else if (act >= 0.025) dir.settled = 0;
+    // The ridge reading, refreshed on probe's cadence rather than every frame: probe
+    // already samples the field on its own schedule, and six lifeAt lookups a frame is
+    // six more than anyone needs. Also keeps `state()` cheap for whoever polls it.
+    ridgeReading = ridgeSensor();
     hist.push({ mean, std, act }); if (hist.length > 8) hist.shift();
     const prev = hist.length > 1 ? hist[hist.length - 2] : null;
 
@@ -723,7 +755,10 @@
     state: () => ({ F: W.F, k: W.k, heading, mode, place: nearestPlace(), visiting: visiting ? { note: visiting.note, by: visiting.by } : null, route: route ? { name: route.r.name, by: route.r.by, point: route.i } : null,
       mean: stats.mean, std: stats.std, activity: stats.act, alive: stats.alive, flat, aniso, light: lightAngle(), season, grade: gmix < 1 ? gradeA + ' to ' + gradeB : gradeB, director: { settled: dir.settled, last: dir.last, kOff: +dir.kOff.toFixed(4), fOff: +dir.fOff.toFixed(4), zoom: +dir.zx.toFixed(2) }, camera: { x: +cam.x.toFixed(3), y: +cam.y.toFixed(3), zoom: +cam.z.toFixed(2) },
       passage: { open: !!hy.target, amount: +hy.amt.toFixed(2), segments: hy.seg, breakthrough: +hy.brk.toFixed(2), dark: hy.darkMode, phase: hy.target ? hy.phase : 'none', through: hy.through, by: hy.by || null },
-      uptime: (performance.now() - t0)/1000, frame, steps, mode_gpu: ctx.mode, sim: [simW, simH], marks: marks.length, routes: routes.length, visitors: visits.length, restores, snapshots, log: log.slice(-20) }),
+      uptime: (performance.now() - t0)/1000, frame, steps, mode_gpu: ctx.mode, sim: [simW, simH], marks: marks.length, routes: routes.length, visitors: visits.length, restores, snapshots, log: log.slice(-20),
+      // What the baked sweep says about where we are standing. Read-only: no caller here
+      // feeds these numbers into u_F/u_k, so the field grows exactly as upstream grew it.
+      ridge: { ...ridgeReading, crests: CRESTS.length } }),
     ascii, log,
     set: (F, k) => { W.F = clamp(+F, BOX.F0, BOX.F1); W.k = clamp(+k, BOX.k0, BOX.k1); note('set'); return api.state(); },
     goto: (name, holdSeconds) => { const p = PLACES[name]; if (!p) return { ok: false, places: Object.keys(PLACES) }; target = { F: p.F, k: p.k, hold: holdSeconds || 90 }; mode = 'goto'; visiting = null; route = null; showCaption(''); note('goto', { name }); return { ok: true, name }; },
